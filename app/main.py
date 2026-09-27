@@ -12,14 +12,14 @@ from pydantic import BaseModel, Field
 from .attachments import build_attachments_zip, list_attachments
 from .cidcheck import check_cids
 from .diff import diff_results
-from .mime import encode_tree, parse_message
+from .mime import encode_tree, fix_boundary_conflicts, parse_message
 
 app = FastAPI(
     title="MIME Multipart 报文检查器",
     description="按 RFC 2045/2046 解析嵌套 multipart 与 Content-Transfer-Encoding，"
                 "编辑后按原 boundary 规则与 CTE 折行重新编码；支持 RFC 2231 附件提取"
                 "与 multipart/related 的 CID 引用静态检查。",
-    version="1.3.0",
+    version="1.4.0",
 )
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -88,6 +88,21 @@ def api_parse(req: ParseRequest):
 @app.post("/api/encode")
 def api_encode(req: EncodeRequest):
     result = encode_tree(req.tree, req.include_headers)
+    return JSONResponse(result)
+
+
+class FixBoundariesRequest(BaseModel):
+    # tree 为当前可编辑树（与 /api/encode 的入参相同）。修复在服务端
+    # 深拷贝上进行：任一层无法安全修复时原树不变，返回 ok=False 与原因。
+    tree: dict
+
+    model_config = {"populate_by_name": True}
+
+
+@app.post("/api/fix-boundaries")
+def api_fix_boundaries(req: FixBoundariesRequest):
+    """按实际回写字节自内向外修复 multipart 定界符冲突。"""
+    result = fix_boundary_conflicts(req.tree)
     return JSONResponse(result)
 
 

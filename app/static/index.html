@@ -76,15 +76,20 @@
         <button id="btnSaveB" class="btn btn-sm" type="button">存为样本 B</button>
       </div>
     </div>
-    <div class="hint tree-hint">直接修改头部、正文、boundary、preamble/epilogue；叶子节点可切换 Content-Transfer-Encoding（base64 / quoted-printable 等）。未改动的节点按原字节还原。</div>
+    <div class="hint tree-hint">直接修改头部、正文、boundary、preamble/epilogue；叶子节点可切换 Content-Transfer-Encoding（base64 / quoted-printable 等）。未改动的节点按原字节还原。若某层序言或子实体的行首内容会被误认作定界符，可点「修复定界符冲突」自内向外为该层自动换用符合 RFC 2046 且在完整输出中不冲突的新 boundary。</div>
     <div id="treeRoot"></div>
+
+    <div id="fixReport" class="fix-report hidden"></div>
 
     <div class="encode-bar">
       <label class="check">
         <input type="checkbox" id="includeHeaders" checked>
         编码时包含顶层头部（取消勾选则仅输出 multipart body）
       </label>
-      <button id="btnEncode" class="btn btn-primary" type="button">重新编码并下载</button>
+      <div class="encode-actions">
+        <button id="btnFixBoundaries" class="btn" type="button">修复定界符冲突</button>
+        <button id="btnEncode" class="btn btn-primary" type="button">重新编码并下载</button>
+      </div>
     </div>
   </section>
 

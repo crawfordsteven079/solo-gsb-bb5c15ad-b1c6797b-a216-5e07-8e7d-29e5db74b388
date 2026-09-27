@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import re
+import secrets
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -1147,7 +1149,54 @@ def _encode_leaf_body(node: dict, cte: str, issues: list[dict], path: str) -> by
     return decoded
 
 
-def _assemble_node(node: dict, issues: list[dict], path: str):
+def _emit_multipart_body(node: dict, boundary: str, issues: list[dict], path: str,
+                         trial: bool = False):
+    """按 RFC 2046 生成 multipart body（起始 CRLF + 各部分 + 关闭定界符 + epilogue）。
+
+    与 ``_assemble_node`` 的 multipart 分支使用完全相同的回写规则：
+    未编辑叶子回写 ``rawBodyBase64`` 保存的原始传输字节，已编辑叶子按
+    所选 CTE 重新编码。供“修复定界符冲突”以候选 boundary 试组、再解析
+    验证使用（不依赖节点当前的 ``boundary`` 字段）。
+
+    返回 ``(body, preamble_expected, entities)``：
+    * body                完整 multipart body；
+    * preamble_expected   去掉末尾 CRLF 后的序言字节（与 split_multipart
+                          返回的 preamble 可比）；
+    * entities            每个子部分实际回写的完整 entity 字节（head+CRLF+body）。
+    """
+    out = bytearray()
+    preamble = _encode_text(node.get("preamble", ""),
+                            node.get("preambleEncoding", "utf-8"))
+    if preamble:
+        if not preamble.endswith(CRLF):
+            preamble += CRLF
+        out += preamble
+    elif node.get("leadingCrlf", True):
+        out += CRLF
+    bval = boundary.encode("utf-8", errors="replace")
+    delim = DASHDASH + bval
+    entities: list[bytes] = []
+    for idx, child in enumerate(node.get("parts", [])):
+        out += delim + CRLF
+        chead, cbody = _assemble_node(child, issues, f"{path}.parts[{idx}]",
+                                      _trial=trial)
+        entity = (chead + CRLF) if chead else b""
+        entity += cbody
+        entities.append(entity)
+        out += entity
+        # CRLF 属于下一个 boundary line（RFC 2046 明确规定）
+        out += CRLF
+    out += delim + DASHDASH
+    epilogue = _encode_text(node.get("epilogue", ""),
+                            node.get("epilogueEncoding", "utf-8"))
+    if epilogue:
+        # 关闭定界符行以 CRLF 结束，随后是 epilogue 内容
+        out += CRLF + epilogue.lstrip(b"\r\n")
+    preamble_expected = preamble[:-2] if preamble.endswith(CRLF) else preamble
+    return bytes(out), preamble_expected, entities
+
+
+def _assemble_node(node: dict, issues: list[dict], path: str, _trial: bool = False):
     """组装单个 entity，返回 (head, body)：
     * head：不含结尾空行的头部块；
     * body：entity 正文。
@@ -1168,49 +1217,26 @@ def _assemble_node(node: dict, issues: list[dict], path: str):
         elif not BOUNDARY_BCHARS_RE.fullmatch(bval):
             _issue(issues, "warning", "BOUNDARY_NONCOMPLIANT",
                    f"{path}：boundary {boundary!r} 不符合 RFC 2046 长度/字符限制")
-        _sync_boundary_header(headers, node.get("mediaType") or "multipart/mixed",
-                              boundary, issues, path)
+        if not _trial:
+            _sync_boundary_header(headers, node.get("mediaType") or "multipart/mixed",
+                                  boundary, issues, path)
         head = _build_head(headers)
 
-        out = bytearray()
-        preamble = _encode_text(node.get("preamble", ""),
-                                node.get("preambleEncoding", "utf-8"))
-        # 首定界符之前必须有 CRLF（RFC 2046）：
-        # 序言非空时其结尾的 CRLF 即充当该换行；
-        # 无序言时按 leadingCrlf（缺省 True）补一个。
-        leading_crlf = node.get("leadingCrlf", True)
-        if preamble:
-            if not preamble.endswith(CRLF):
-                preamble += CRLF
-            out += preamble
-        elif leading_crlf:
-            out += CRLF
-        delim = DASHDASH + bval
-        parts = node.get("parts", [])
-        if not parts:
+        body, _preamble_expected, entities = _emit_multipart_body(
+            node, boundary, issues, path, trial=_trial)
+        if not node.get("parts", []):
             _issue(issues, "warning", "EMPTY_MULTIPART",
                    f"{path}：multipart 不包含任何部分")
-        for idx, child in enumerate(parts):
-            out += delim + CRLF
-            chead, cbody = _assemble_node(child, issues, f"{path}.parts[{idx}]")
-            entity = (chead + CRLF) if chead else b""
-            entity += cbody
+        for idx, child in enumerate(node.get("parts", [])):
             # 叶子部分必须保证其内容不会在“行首”伪造本层定界符
-            if child.get("kind") != "multipart" and (CRLF + delim) in entity:
+            if not _trial and child.get("kind") != "multipart" and \
+                    (CRLF + DASHDASH + bval) in entities[idx]:
                 _issue(issues, "error", "BOUNDARY_COLLISION",
                        f"{path}.parts[{idx}]：正文在某行行首包含定界符 "
                        f"\"--{boundary}\"，重新编码后的报文会被提前截断；"
-                       "请修改 boundary 或对该部分使用 Content-Transfer-Encoding")
-            out += entity
-            # CRLF 属于下一个 boundary line（RFC 2046 明确规定）
-            out += CRLF
-        out += delim + DASHDASH
-        epilogue = _encode_text(node.get("epilogue", ""),
-                                node.get("epilogueEncoding", "utf-8"))
-        if epilogue:
-            # 关闭定界符行以 CRLF 结束，随后是 epilogue 内容
-            out += CRLF + epilogue.lstrip(b"\r\n")
-        return head, bytes(out)
+                       "请修改 boundary 或对该部分使用 Content-Transfer-Encoding，"
+                       "或使用“修复定界符冲突”")
+        return head, body
 
     # hasHeaders=False 的部分原本就没有头部块（也没有头/体空行），
     # 必须逐字节保留；用户一旦添加头部则恢复标准 head+CRLF+body 结构。
@@ -1230,7 +1256,8 @@ def _assemble_node(node: dict, issues: list[dict], path: str):
         body = base64.b64decode(raw_b64)
     else:
         body = _encode_leaf_body(node, cte, issues, path)
-    _sync_cte_header(headers, cte, issues, path)
+    if not _trial:
+        _sync_cte_header(headers, cte, issues, path)
     head = _build_head(headers)
     return head, body
 
@@ -1273,3 +1300,154 @@ def encode_tree(tree: dict, include_headers: bool) -> dict:
         "counts": counts,
         "lineEnding": "CRLF",
     }
+
+
+# --------------------------------------------------------------------------- #
+# 修复定界符冲突（RFC 2046）
+# --------------------------------------------------------------------------- #
+#
+# 按“实际回写字节”自内向外（后序）检查每个 multipart：序言或某个子实体中
+# 若存在会被 split_multipart 误认作本层定界符的行首内容（普通或关闭定界符），
+# 只为该层挑选一个在完整输出中不冲突的、符合 RFC 2046 bcharsnospace 的新
+# boundary；未编辑叶子直接按 rawBodyBase64 的原始传输字节判定。
+# 任一层找不到安全的新 boundary 时返回 ok=False，且整棵树保持不变
+# （所有尝试都在深拷贝上进行）。
+
+FIX_BOUNDARY_PREFIX = "MIME-FIX-"
+# 候选数量：候选由 secrets.token_hex 生成，碰撞概率可忽略，上限仅用于兜底
+_FIX_CANDIDATE_TRIES = 64
+
+
+def _new_boundary_candidates(taken: set[str]):
+    """生成符合 RFC 2046 的候选 boundary（bcharsnospace，长度 <=70）。
+
+    前 4 个候选带递增序号（短小、可读），其余带 16 字节随机值；
+    跳过 ``taken`` 中已被同层尝试过的候选。
+    """
+    yielded = 0
+    seq = 0
+    while yielded < _FIX_CANDIDATE_TRIES:
+        if seq < 4:
+            cand = f"{FIX_BOUNDARY_PREFIX}{seq + 1}"
+        else:
+            cand = FIX_BOUNDARY_PREFIX + secrets.token_hex(8)
+        seq += 1
+        if cand in taken or len(cand) > 70:
+            continue
+        if BOUNDARY_BCHARS_RE.fullmatch(cand.encode("ascii")):
+            taken.add(cand)
+            yielded += 1
+            yield cand
+
+
+def _boundary_is_safe(node: dict, boundary: str, path: str):
+    """以实际回写字节试组该 multipart，再按本层 boundary 重新切分验证。
+
+    安全条件：定界符被识别、关闭定界符存在、切出的子部分数量与树一致、
+    每个子部分字节与实际回写的 entity 完全一致、序言字节一致。
+    任何一项不满足都说明序言或某个子实体中存在会被误认作本层定界符的
+    行首内容（含被提前关闭）。
+    """
+    if not boundary or not BOUNDARY_BCHARS_RE.fullmatch(
+            boundary.encode("utf-8", errors="replace")):
+        return False
+    trial_issues: list[dict] = []
+    try:
+        body, preamble_expected, entities = _emit_multipart_body(
+            node, boundary, trial_issues, path, trial=True)
+    except Exception:
+        return False
+    bval = boundary.encode("utf-8", errors="replace")
+    check_issues: list[dict] = []
+    sp = split_multipart(body, bval, check_issues, path=path)
+    if not sp["matched"] or not sp["closed"]:
+        return False
+    if len(sp["parts"]) != len(entities):
+        return False
+    if sp["preamble"] != preamble_expected:
+        return False
+    return all(a == b for a, b in zip(sp["parts"], entities))
+
+
+def _fix_node_boundaries(node: dict, path: str, changes: list[dict],
+                         failed: list[tuple]):
+    """后序修复：先修内层 multipart，再按回写字节检查本层。
+
+    返回 True 表示成功（含无需修改）；False 表示该层无法安全修复，
+    ``(路径, 候选尝试次数)`` 记入 ``failed``（调用方应整体放弃，不把改动
+    写回原树）。
+    """
+    if node.get("kind") != "multipart":
+        return True
+    for idx, child in enumerate(node.get("parts", [])):
+        child_path = f"{path}.parts[{idx}]" if path != "root" else f"parts[{idx}]"
+        if not _fix_node_boundaries(child, child_path, changes, failed):
+            return False
+
+    old = node.get("boundary") or ""
+    if _boundary_is_safe(node, old, path):
+        return True
+
+    tried: set[str] = set()
+    if old:
+        tried.add(old)
+    attempts = 0
+    new_boundary: Optional[str] = None
+    for cand in _new_boundary_candidates(tried):
+        attempts += 1
+        if _boundary_is_safe(node, cand, path):
+            new_boundary = cand
+            break
+    if new_boundary is None:
+        failed.append((path, attempts))
+        return False
+
+    node["boundary"] = new_boundary
+    # 同步该节点 Content-Type 头部中的 boundary 参数
+    sync_issues: list[dict] = []
+    _sync_boundary_header(node.setdefault("headers", []),
+                          node.get("mediaType") or "multipart/mixed",
+                          new_boundary, sync_issues, path)
+    changes.append({"path": path, "old": old, "new": new_boundary})
+    return True
+
+
+def fix_boundary_conflicts(tree: dict) -> dict:
+    """按实际回写字节修复整棵树中的定界符冲突。
+
+    全部检查与试组在树的深拷贝上完成；任一层无法安全修复时原树保持
+    原样，返回 ``ok=False`` 与原因。成功时返回修复后的 ``tree``（未发现
+    冲突时该树与输入等价）及按自内向外顺序排列的修改清单。
+    """
+    if not isinstance(tree, dict):
+        return {"ok": False, "error": "报文树格式错误", "changes": []}
+    if tree.get("kind") != "multipart":
+        return {"ok": True, "tree": tree, "changes": [], "checked": False,
+                "message": "当前树不是 multipart，没有定界符需要修复"}
+
+    work = copy.deepcopy(tree)
+    changes: list[dict] = []
+    failed: list[str] = []
+    try:
+        fixed = _fix_node_boundaries(work, work.get("path", "root") or "root",
+                                     changes, failed)
+    except Exception as exc:  # 任何意外都不允许留下半修复状态
+        return {"ok": False,
+                "error": f"修复定界符冲突时发生异常，已保持原树不变：{exc}",
+                "changes": []}
+    if not fixed:
+        failed_at, attempts = failed[0] if failed else ("某层", 0)
+        return {
+            "ok": False,
+            "error": f"{failed_at}：无法找到在完整输出中不冲突且符合 "
+                     "RFC 2046 的新 boundary"
+                     f"（已尝试 {attempts} 个候选"
+                     f"{'，候选上限 ' + str(_FIX_CANDIDATE_TRIES) if attempts >= _FIX_CANDIDATE_TRIES else ''}"
+                     "）；已保持整棵树不变，请检查该层序言或子实体内容后重试",
+            "changes": [],
+        }
+
+    return {"ok": True, "tree": work, "changes": changes,
+            "checked": True,
+            "message": (f"已修复 {len(changes)} 层 multipart 的定界符冲突"
+                        if changes else "未发现定界符冲突，所有层均可安全编码")}

@@ -533,6 +533,7 @@ async function doParse() {
     attachUnchecked.clear();
     attachSeen.clear();
     attachSeenExportable.clear();
+    hideFixReport();
     $("#effectiveBoundary").textContent = data.effectiveBoundary ?? "—（无）";
     const metaBits = [];
     metaBits.push(`媒体类型 <b>${escapeHtml(data.mediaType || "—")}</b>`);
@@ -592,6 +593,74 @@ function bytesToText(bytes) {
     let s = "";
     for (const b of bytes) s += String.fromCharCode(b);
     return s;
+  }
+}
+
+// ------------------------------------------------- fix boundary conflicts --
+
+function hideFixReport() {
+  $("#fixReport").classList.add("hidden");
+  $("#fixReport").innerHTML = "";
+}
+
+function renderFixReport(data) {
+  const box = $("#fixReport");
+  box.innerHTML = "";
+  box.classList.remove("fix-ok", "fix-fail");
+
+  if (!data.ok) {
+    box.classList.add("fix-fail");
+    box.innerHTML =
+      `<div class="fix-head">⛔ 无法安全修复定界符冲突，<b>整棵树保持不变</b></div>` +
+      `<div class="fix-msg">${escapeHtml(data.error || "未知错误")}</div>`;
+  } else {
+    box.classList.add("fix-ok");
+    const changes = data.changes || [];
+    const head = document.createElement("div");
+    head.className = "fix-head";
+    head.textContent = changes.length
+      ? `✅ ${data.message || "定界符冲突已修复"}（已同步到编辑树与各节点 Content-Type）`
+      : `✅ ${data.message || "未发现定界符冲突"}`;
+    box.appendChild(head);
+    if (changes.length) {
+      const table = document.createElement("table");
+      table.className = "fix-table";
+      table.innerHTML =
+        "<tr><th>节点路径</th><th>旧 boundary</th><th>新 boundary</th></tr>";
+      for (const c of changes) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          `<td class="fix-path">${escapeHtml(c.path)}</td>` +
+          `<td class="fix-old">${escapeHtml(c.old || "（空）")}</td>` +
+          `<td class="fix-new">${escapeHtml(c.new)}</td>`;
+        table.appendChild(tr);
+      }
+      box.appendChild(table);
+    }
+  }
+  box.classList.remove("hidden");
+}
+
+async function doFixBoundaries() {
+  if (!tree) return;
+  reindexPaths(tree, "root");
+  const btn = $("#btnFixBoundaries");
+  btn.disabled = true;
+  try {
+    const data = await postJSON("/api/fix-boundaries", { tree });
+    renderFixReport(data);
+    if (!data.ok) return;
+    if ((data.changes || []).length) {
+      // 应用修复后的树：节点 boundary 与 Content-Type 均已由后端同步
+      tree = data.tree;
+      rerenderTree();
+      // 修复后的报文仍走现有下载流程：按当前选项重新编码（不自动下载）
+      await doEncode(false);
+    }
+  } catch (e) {
+    renderFixReport({ ok: false, error: "修复请求失败：" + e.message });
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -1295,6 +1364,7 @@ function exportDiff() {
 function init() {
   $("#btnParse").addEventListener("click", doParse);
   $("#btnEncode").addEventListener("click", () => doEncode(true));
+  $("#btnFixBoundaries").addEventListener("click", doFixBoundaries);
   $("#btnDownload").addEventListener("click", downloadBlob);
   $("#btnCopy").addEventListener("click", copyOutput);
   $("#showOutput").addEventListener("change", (e) => {

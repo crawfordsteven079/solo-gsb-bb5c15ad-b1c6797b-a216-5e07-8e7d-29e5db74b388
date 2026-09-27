@@ -214,8 +214,35 @@ textarea { resize: vertical; min-height: 180px; line-height: 1.5; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap;
 }
+.encode-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 0; }
 .check input { width: auto; }
+
+/* 修复定界符冲突结果 */
+.fix-report {
+  margin-top: 14px; border-radius: 10px; padding: 11px 14px;
+  border: 1px solid var(--border); border-left-width: 3px;
+  background: var(--panel-2); font-size: 13px;
+}
+.fix-report.fix-ok { border-left-color: var(--ok); }
+.fix-report.fix-fail { border-left-color: var(--error); background: var(--error-bg); }
+.fix-report .fix-head { font-weight: 600; margin-bottom: 6px; }
+.fix-report.fix-ok .fix-head { color: #7fe7b8; }
+.fix-report.fix-fail .fix-head { color: var(--error); }
+.fix-report .fix-msg { color: var(--warning); font-size: 12px; word-break: break-all; }
+.fix-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+.fix-table th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  padding: 3px 10px 3px 0;
+}
+.fix-table td { padding: 3px 10px 3px 0; vertical-align: top; }
+.fix-table .fix-path { font-family: var(--mono); color: var(--text); white-space: nowrap; }
+.fix-table .fix-old {
+  font-family: var(--mono); color: #ffb3b3; word-break: break-all;
+}
+.fix-table .fix-new {
+  font-family: var(--mono); color: #7fe7b8; word-break: break-all;
+}
 
 .output-actions { display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
 .filename { width: 220px !important; }
