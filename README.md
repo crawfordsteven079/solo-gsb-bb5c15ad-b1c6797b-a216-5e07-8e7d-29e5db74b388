@@ -23,6 +23,11 @@
 - 🔁 **重新编码并下载**：按（可能已修改的）boundary 规则以 CRLF 重新生成报文，
   按头部声明回写 Content-Transfer-Encoding（base64/QP 自动折行），
   可选择是否包含顶层头部；未修改的部分逐字节还原（含二进制）。
+- 🔧 **修复定界符冲突**：按**实际回写字节**自内向外检查每个 multipart——
+  序言或子实体中的行首内容若会被误认作本层定界符，只为该层生成符合
+  RFC 2046、在完整输出中不冲突的新 boundary（未编辑叶子按保留的原始传输
+  字节判断）；修复值同步到节点 Content-Type 与页面编辑树，并列出路径及
+  旧、新值；任一层无法安全修复时整棵树保持不变并说明原因。
 - 🆚 **样本对比**：把两份解析结果存为样本 A / B（保存在浏览器 localStorage），
   按树路径对齐比较媒体类型、头部、正文编码、boundary、序言/尾注与诊断代码；
   差异以可展开的新增/删除/修改清单展示，点击条目即可在两侧结构树中定位节点，
@@ -109,7 +114,19 @@ http://localhost:8000/docs 。
      保证逐字节稳定；原始载荷保存在节点的 `rawBodyBase64` 字段中，不会丢失。
 5. 勾选/取消“编码时包含顶层头部”，点击 **重新编码并下载**。
 6. 在结果区可重新下载、复制为文本，或查看编码后的完整报文。
-7. **附件提取**（「3. 附件提取」卡片，解析后自动出现）：
+7. **修复定界符冲突**（「2. 报文结构」底部重新编码区）：
+   - 当正文、序言等内容的行首出现 `--boundary` 碰撞文本时，重新编码会报
+     `BOUNDARY_COLLISION` 错误（报文会被提前截断）。点击
+     **修复定界符冲突**，后端按**实际回写字节**（未编辑叶子取
+     `rawBodyBase64` 保存的原始传输字节，已编辑叶子按所选 CTE 重新编码）
+     **自内向外**检查每个 multipart：序言或任一子实体中存在会被误认作
+     本层定界符的行首内容时，只为该层生成符合 RFC 2046（bchars、
+     ≤ 70 字符）且在完整输出中不冲突的新 boundary；
+   - 修复值会同步到该节点的 Content-Type 头部与页面编辑树，按钮下方
+     逐条列出**节点路径、旧 boundary、新 boundary**；
+   - 修复是**原子**的：任一层无法安全修复时，整棵树保持不变并显示原因；
+   - 修复后的报文仍走现有下载流程——直接点击 **重新编码并下载** 即可。
+8. **附件提取**（「3. 附件提取」卡片，解析后自动出现）：
    - 递归列出所有带 `Content-Disposition: attachment` 或 `filename` /
      `filename*` 参数的叶子（包括嵌套 multipart 内部），每行显示
      **ZIP 内文件名、字节数、节点路径、disposition、媒体类型、文件名来源、
@@ -126,7 +143,7 @@ http://localhost:8000/docs 。
      内容；未编辑叶子若处于 `malformed`（畸形 base64/QP）或
      `passthrough`（未知 CTE）状态则**无法勾选**，并显示具体原因——
      在结构树中编辑该节点后即变为可导出。
-8. **CID 引用检查**（结构树右侧侧栏，解析后自动出现）：
+9. **CID 引用检查**（结构树右侧侧栏，解析后自动出现）：
    - 只检查 `Content-Type: text/html` 且正文为**合法 UTF-8** 的叶子：
      `application/xhtml+xml` 等其他 html 类型、二进制（base64 编辑通道）或
      非法 UTF-8 的 text/html 一律显示「无法检查」与原因，不做猜测；
@@ -138,7 +155,7 @@ http://localhost:8000/docs 。
    - 点击侧栏右上角「检查」立即使用**当前树**重新检查；在结构树中编辑正文、
      头部（含 Content-ID / Content-Type）、切换 CTE、新增或删除部分后，
      停止输入片刻自动重查（与附件列表共用防抖）。
-9. **样本对比**（页面底部「5. 样本对比」卡片）：
+10. **样本对比**（页面底部「5. 样本对比」卡片）：
    - 解析一份报文后点击结构区右上角的 **存为样本 A**；再解析（或编辑后重新解析）
      另一份报文，点击 **存为样本 B**。样本保存在浏览器 localStorage，刷新不丢失；
    - 点击 **开始对比**，查看按树路径对齐的差异清单（新增 / 删除 / 修改 / 未变化，
@@ -166,7 +183,7 @@ http://localhost:8000/docs 。
 | `TRUNCATED_PART` | 错误 | 某部分之后缺少结束该部分的 CRLF |
 | `BAD_DELIMITER` | 错误 | 定界符后存在非法字符，或出现碰撞文本 |
 | `MISSING_BOUNDARY` | 错误 | `multipart/*` 的 Content-Type 无 boundary 参数 |
-| `BOUNDARY_COLLISION` | 错误 | （编码时）正文行首出现本层定界符，会截断报文 |
+| `BOUNDARY_COLLISION` | 错误 | （编码时）正文行首出现本层定界符，会截断报文；可用「修复定界符冲突」为该层生成新 boundary |
 | `BAD_HEADER_LINE` / `BAD_HEADER_NAME` | 错误 | 头部缺少冒号 / 字段名非法 |
 | `BAD_QUOTED_STRING` / `BAD_PARAM_SYNTAX` | 错误 | 引号未闭合 / 参数语法错误 |
 | `LF_NORMALIZED` | 警告 | 输入含孤立 LF/CR，已规范化为 CRLF |
@@ -286,6 +303,42 @@ http://localhost:8000/docs 。
   "issues": []
 }
 ```
+
+### `POST /api/fix-boundaries`
+
+修复定界符冲突：请求体只有 `/api/parse` 返回（可能已被前端修改）的 `tree`。
+按**实际回写字节**（与 `/api/encode` 相同的组装逻辑；未编辑叶子取
+`rawBodyBase64` 原始传输字节）**自内向外**检查每个 multipart：序言或
+子实体中的行首内容若会被误认作本层定界符，只为该层生成符合 RFC 2046、
+在完整输出中不冲突的新 boundary，并同步该节点的 Content-Type 头部。
+
+```json
+{ "tree": { /* /api/parse 返回的 tree，可修改 */ } }
+```
+
+响应（有修复时）：
+
+```json
+{
+  "ok": true,
+  "changed": true,
+  "fixes": [
+    { "path": "root", "oldBoundary": "B", "newBoundary": "B-fix-844d6633a0971402" },
+    { "path": "parts[1]", "oldBoundary": "INNER", "newBoundary": "INNER-fix-0c3d…" }
+  ],
+  "tree": { /* 修复后的完整树：boundary 与 Content-Type 均已同步 */ }
+}
+```
+
+说明：
+
+- `fixes` 逐条列出被修复层的**节点路径、旧 boundary、新 boundary**；
+  修复后的报文把返回的 `tree` 回传 `/api/encode` 即可走现有下载流程；
+- 无冲突时返回 `{"ok": true, "changed": false, "fixes": [], "tree": null,
+  "message": "未发现定界符冲突，无需修复"}`；
+- 修复是**原子**的：任一层无法安全修复（候选 boundary 均无法在完整输出中
+  保证不冲突）时返回 `{"ok": false, "changed": false, "error": "…原因…"}`，
+  传入的树不被修改。
 
 ### `POST /api/diff`
 
@@ -507,17 +560,18 @@ CID 引用静态检查：请求体只有 `/api/parse` 返回（可能已被前�
 .
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # FastAPI 应用：/api/parse、/api/encode、/api/diff、/api/attachments、/api/cid-check、静态文件
+│   ├── main.py              # FastAPI 应用：/api/parse、/api/encode、/api/fix-boundaries、/api/diff、/api/attachments、/api/cid-check、静态文件
 │   ├── mime.py              # 零第三方依赖的 MIME 解析 / 重新编码核心
+│   ├── boundaryfix.py       # 定界符冲突修复：按实际回写字节自内向外检查并为冲突层生成新 boundary
 │   ├── attachments.py       # RFC 2231 文件名解析、附件发现与 ZIP 打包（标准库 zipfile）
 │   ├── cidcheck.py          # multipart/related 作用域内的 cid: 引用静态检查（标准库 html.parser）
 │   ├── diff.py              # 样本对比：按树路径对齐的字段级差异计算
 │   └── static/
 │       ├── index.html       # 页面结构
 │       ├── styles.css       # 深色主题样式
-│       └── app.js           # 原生 JS：示例、树形编辑器、附件提取、CID 引用检查、样本对比、下载
+│       └── app.js           # 原生 JS：示例、树形编辑器、定界符冲突修复、附件提取、CID 引用检查、样本对比、下载
 ├── tests/
-│   └── smoke_test.py        # 解析/编码/对比端到端测试（仅需 Python 标准库）
+│   └── smoke_test.py        # 解析/编码/修复/对比端到端测试（仅需 Python 标准库）
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
@@ -547,7 +601,12 @@ ZIP 条目内容与错误码、嵌套 multipart 附件），以及
 CID 引用检查（最近 related 祖先作用域、嵌套 related 子树排除、
 无祖先无作用域、Content-ID 去尖括号与空白、cid 前缀大小写不敏感、
 百分号解码一次、标识符区分大小写、唯一/缺失/重复歧义、非 UTF-8 与
-其他 html 类型无法检查、标签/属性/行号记录）。
+其他 html 类型无法检查、标签/属性/行号记录），以及
+定界符冲突修复（叶子正文/序言行首碰撞触发修复、嵌套同 boundary 自内向外
+只修冲突层、未编辑叶子按原始传输字节判断（base64 传输字节无碰撞不修复、
+QP 传输字节有碰撞则修复）、编辑后按新回写字节判断、修复值同步
+Content-Type、新 boundary 符合 RFC 2046、修复后重解析结构与内容一致、
+无冲突不变更、候选耗尽时整体失败且原树不变）。
 
 ---
 

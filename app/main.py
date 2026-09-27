@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .attachments import build_attachments_zip, list_attachments
+from .boundaryfix import fix_boundary_conflicts
 from .cidcheck import check_cids
 from .diff import diff_results
 from .mime import encode_tree, parse_message
@@ -17,9 +18,9 @@ from .mime import encode_tree, parse_message
 app = FastAPI(
     title="MIME Multipart 报文检查器",
     description="按 RFC 2045/2046 解析嵌套 multipart 与 Content-Transfer-Encoding，"
-                "编辑后按原 boundary 规则与 CTE 折行重新编码；支持 RFC 2231 附件提取"
-                "与 multipart/related 的 CID 引用静态检查。",
-    version="1.3.0",
+                "编辑后按原 boundary 规则与 CTE 折行重新编码；支持定界符冲突修复、"
+                "RFC 2231 附件提取与 multipart/related 的 CID 引用静态检查。",
+    version="1.4.0",
 )
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -73,6 +74,13 @@ class AttachmentsZipRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class FixBoundariesRequest(BaseModel):
+    # tree 为当前解析/编辑后的树（与 /api/encode 的入参相同）
+    tree: dict
+
+    model_config = {"populate_by_name": True}
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}
@@ -119,6 +127,14 @@ def api_attachments_zip(req: AttachmentsZipRequest):
 def api_cid_check(req: AttachmentsRequest):
     """静态检查编辑树中 HTML 叶子的 cid: 引用（不执行、不加载任何资源）。"""
     return JSONResponse(check_cids(req.tree))
+
+
+@app.post("/api/fix-boundaries")
+def api_fix_boundaries(req: FixBoundariesRequest):
+    """修复定界符冲突：按实际回写字节自内向外检查每个 multipart，
+    为冲突层生成 RFC 2046 合规且不冲突的新 boundary 并同步 Content-Type；
+    任一层无法安全修复时整棵树保持不变。"""
+    return JSONResponse(fix_boundary_conflicts(req.tree))
 
 
 @app.get("/")

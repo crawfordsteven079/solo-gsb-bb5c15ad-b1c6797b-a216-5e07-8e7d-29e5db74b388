@@ -840,5 +840,156 @@ check("19: normalize_content_id / decode_cid_ref 边界",
       and cidcheck.decode_cid_ref("CID:a%25b") == "a%b"
       and cidcheck.decode_cid_ref("cid:%E4%BD%A0%E5%A5%BD") == "你好")
 
+# 20. 定界符冲突修复 ----------------------------------------------------------
+print("20) 定界符冲突修复（fix_boundary_conflicts）")
+from app import boundaryfix
+
+# 20a. 叶子正文行首出现 "--B..."（解析时 BAD_DELIMITER 保留在正文）-> 修复根层
+raw20 = (b'Content-Type: multipart/mixed; boundary=B\r\n\r\n'
+         b'--B\r\nContent-Type: text/plain\r\n\r\nhello\r\n'
+         b'--B\r\nContent-Type: text/plain\r\n\r\n'
+         b'first line\r\n--BROKEN lookalike\r\nlast\r\n'
+         b'--B--')
+r20 = mime.parse_message(None, None, None,
+                         raw_base64=base64.b64encode(raw20).decode())
+enc20bad = mime.encode_tree(r20["tree"], True)
+check("20: 未修复时编码报 BOUNDARY_COLLISION",
+      any(i["code"] == "BOUNDARY_COLLISION" for i in enc20bad["issues"]),
+      [i["code"] for i in enc20bad["issues"]])
+res20 = boundaryfix.fix_boundary_conflicts(r20["tree"])
+check("20: 修复成功且有变更", res20["ok"] and res20["changed"],
+      res20.get("error"))
+check("20: 原树未被修改（原子性）", r20["tree"]["boundary"] == "B")
+check("20: 仅修复 root 一层并列出旧/新值",
+      len(res20["fixes"]) == 1
+      and res20["fixes"][0]["path"] == "root"
+      and res20["fixes"][0]["oldBoundary"] == "B"
+      and res20["fixes"][0]["newBoundary"], res20["fixes"])
+new_b = res20["fixes"][0]["newBoundary"]
+check("20: 新 boundary 符合 RFC 2046 且不同于旧值",
+      new_b != "B" and bool(mime.BOUNDARY_BCHARS_RE.fullmatch(new_b.encode())),
+      new_b)
+fixed = res20["tree"]
+check("20: 修复值写入节点 boundary", fixed["boundary"] == new_b)
+ct20 = next(h for h in fixed["headers"] if h["name"].lower() == "content-type")
+check("20: Content-Type 同步新 boundary",
+      f"boundary={new_b}" in ct20["value"], ct20["value"])
+enc20 = mime.encode_tree(fixed, True)
+check("20: 修复后编码无错误（走现有编码流程）", enc20["ok"], enc20["issues"])
+out20 = base64.b64decode(enc20["payloadBase64"])
+r20b = mime.parse_message(None, None, None,
+                          raw_base64=base64.b64encode(out20).decode())
+check("20: 修复后重解析无 error", r20b["counts"]["error"] == 0,
+      [i for i in r20b["issues"] if i["level"] == "error"])
+check("20: 重解析仍为 2 部分且碰撞正文完整保留",
+      len(r20b["tree"]["parts"]) == 2
+      and "--BROKEN lookalike" in r20b["tree"]["parts"][1]["body"],
+      r20b["tree"]["parts"][1].get("body"))
+
+# 20b. 嵌套 multipart 内外 boundary 相同（模拟用户编辑）-> 自内向外只修外层
+raw20n = (b'Content-Type: multipart/mixed; boundary=OUT\r\n\r\n'
+          b'--OUT\r\nContent-Type: multipart/mixed; boundary=IN\r\n\r\n'
+          b'--IN\r\nContent-Type: text/plain\r\n\r\ninner body\r\n'
+          b'--IN--\r\n'
+          b'--OUT--')
+r20n = mime.parse_message(None, None, None,
+                          raw_base64=base64.b64encode(raw20n).decode())
+inner20 = r20n["tree"]["parts"][0]
+inner20["boundary"] = "OUT"  # 模拟用户把内层 boundary 改成与外层相同
+res20n = boundaryfix.fix_boundary_conflicts(r20n["tree"])
+check("20b: 嵌套同 boundary 修复成功", res20n["ok"] and res20n["changed"],
+      res20n.get("error"))
+check("20b: 只修外层（内层自身无冲突）",
+      [f["path"] for f in res20n["fixes"]] == ["root"]
+      and res20n["fixes"][0]["oldBoundary"] == "OUT", res20n["fixes"])
+check("20b: 内层 boundary 保持不变",
+      res20n["tree"]["parts"][0]["boundary"] == "OUT")
+enc20n = mime.encode_tree(res20n["tree"], True)
+out20n = base64.b64decode(enc20n["payloadBase64"])
+r20nb = mime.parse_message(None, None, None,
+                           raw_base64=base64.b64encode(out20n).decode())
+check("20b: 修复后重解析嵌套结构一致",
+      r20nb["counts"]["error"] == 0
+      and r20nb["tree"]["parts"][0]["kind"] == "multipart"
+      and r20nb["tree"]["parts"][0]["parts"][0]["body"] == "inner body",
+      [i for i in r20nb["issues"] if i["level"] == "error"])
+
+# 20c. 未编辑叶子按保留的原始传输字节判断
+# QP 叶子：传输字节本身含行首 "--QQX" -> 冲突，修复
+raw20q = (b'Content-Type: multipart/mixed; boundary=QQ\r\n\r\n'
+          b'--QQ\r\nContent-Type: text/plain\r\n'
+          b'Content-Transfer-Encoding: quoted-printable\r\n\r\n'
+          b'line one\r\n--QQX forged\r\nline two\r\n'
+          b'--QQ--')
+r20q = mime.parse_message(None, None, None,
+                          raw_base64=base64.b64encode(raw20q).decode())
+check("20c: QP 叶子解码正常", r20q["tree"]["parts"][0]["decodeState"] == "decoded")
+res20q = boundaryfix.fix_boundary_conflicts(r20q["tree"])
+check("20c: 未编辑 QP 叶子按原始传输字节判定冲突并修复",
+      res20q["ok"] and res20q["changed"]
+      and [f["path"] for f in res20q["fixes"]] == ["root"], res20q.get("fixes"))
+# base64 叶子：解码后内容含行首 "--BBX"，但传输字节（纯 base64）不含 ->
+# 未编辑时回写原始传输字节，无冲突，不修复
+payload20 = b'text line\r\n--BBX forged\r\nmore'
+raw20b = (b'Content-Type: multipart/mixed; boundary=BB\r\n\r\n'
+          b'--BB\r\nContent-Type: text/plain\r\n'
+          b'Content-Transfer-Encoding: base64\r\n\r\n'
+          + base64.b64encode(payload20) + b'\r\n--BB--')
+r20bb = mime.parse_message(None, None, None,
+                           raw_base64=base64.b64encode(raw20b).decode())
+res20bb = boundaryfix.fix_boundary_conflicts(r20bb["tree"])
+check("20c: base64 叶子未编辑时按传输字节判断（无冲突不修复）",
+      res20bb["ok"] and not res20bb["changed"], res20bb)
+# 同一叶子编辑后（切换 7bit）按新回写字节判断 -> 冲突，修复
+p20bb = r20bb["tree"]["parts"][0]
+p20bb["transferEncoding"] = "7bit"
+p20bb["bodyEdited"] = True
+res20bc = boundaryfix.fix_boundary_conflicts(r20bb["tree"])
+check("20c: 编辑后按实际回写字节判定冲突并修复",
+      res20bc["ok"] and res20bc["changed"]
+      and [f["path"] for f in res20bc["fixes"]] == ["root"], res20bc.get("fixes"))
+
+# 20d. 序言（preamble）中的行首碰撞 -> 修复
+raw20p = (b'Content-Type: multipart/mixed; boundary=PB\r\n\r\n'
+          b'preamble line\r\n--PBX not a delimiter\r\n'
+          b'--PB\r\nContent-Type: text/plain\r\n\r\nbody\r\n--PB--')
+r20p = mime.parse_message(None, None, None,
+                          raw_base64=base64.b64encode(raw20p).decode())
+check("20d: 序言含碰撞文本", "--PBX not a delimiter" in r20p["tree"]["preamble"])
+res20p = boundaryfix.fix_boundary_conflicts(r20p["tree"])
+check("20d: 序言碰撞触发修复",
+      res20p["ok"] and res20p["changed"]
+      and res20p["fixes"][0]["oldBoundary"] == "PB", res20p.get("fixes"))
+enc20p = mime.encode_tree(res20p["tree"], True)
+r20pb = mime.parse_message(
+    None, None, None,
+    raw_base64=base64.b64encode(base64.b64decode(enc20p["payloadBase64"])).decode())
+check("20d: 修复后序言逐字节保留且重解析无 error",
+      r20pb["tree"]["preamble"] == "preamble line\r\n--PBX not a delimiter"
+      and r20pb["counts"]["error"] == 0,
+      (r20pb["tree"]["preamble"], r20pb["counts"]))
+
+# 20e. 无冲突报文 / 非 multipart 根 -> 不变更
+r20e = mime.parse_message(raw2.decode(), None, None)  # 第 2 节的正常嵌套报文
+res20e = boundaryfix.fix_boundary_conflicts(r20e["tree"])
+check("20e: 无冲突时不变更", res20e["ok"] and not res20e["changed"]
+      and res20e["fixes"] == [], res20e)
+r20leaf = mime.parse_message("plain text", "text/plain", None)
+res20leaf = boundaryfix.fix_boundary_conflicts(r20leaf["tree"])
+check("20e: 非 multipart 根不变更",
+      res20leaf["ok"] and not res20leaf["changed"], res20leaf)
+
+# 20f. 任一层无法安全修复 -> 整体失败且原树不变
+_saved_max = boundaryfix.MAX_CANDIDATES
+boundaryfix.MAX_CANDIDATES = 0  # 候选集合为空，必然无法修复
+try:
+    res20f = boundaryfix.fix_boundary_conflicts(r20["tree"])
+finally:
+    boundaryfix.MAX_CANDIDATES = _saved_max
+check("20f: 无法安全修复时返回失败与原因",
+      not res20f["ok"] and not res20f["changed"] and "root" in res20f["error"],
+      res20f)
+check("20f: 失败后原树保持不变", r20["tree"]["boundary"] == "B")
+
 print(f"\n结果: {PASS} 通过, {FAIL} 失败")
 sys.exit(1 if FAIL else 0)

@@ -214,6 +214,27 @@ textarea { resize: vertical; min-height: 180px; line-height: 1.5; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-wrap: wrap;
 }
+.encode-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* boundary fix result */
+.fix-result { margin-top: 12px; }
+.fix-line { font-size: 13px; margin-bottom: 6px; }
+.fix-ok { color: var(--ok); }
+.fix-error { color: var(--error); }
+.fix-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.fix-list li {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  border: 1px solid var(--border); border-left: 3px solid var(--ok);
+  border-radius: 7px; padding: 7px 12px; margin-bottom: 6px;
+  background: var(--panel-2); font-size: 12px;
+}
+.fix-path { font-family: var(--mono); color: var(--text); }
+.fix-old {
+  font-family: var(--mono); color: #ffb3b3; word-break: break-all;
+  text-decoration: line-through;
+}
+.fix-arrow { color: var(--muted); }
+.fix-new { font-family: var(--mono); color: #7fe7b8; word-break: break-all; }
 .check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 0; }
 .check input { width: auto; }
 

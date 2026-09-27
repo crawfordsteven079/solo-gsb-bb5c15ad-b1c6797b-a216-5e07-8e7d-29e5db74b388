@@ -12,7 +12,7 @@
     <span class="logo">▥</span>
     <div>
       <h1>MIME Multipart 报文检查器</h1>
-      <p class="sub">RFC 2045/2046 · 嵌套 multipart · Content-Transfer-Encoding · quoted 参数 · CRLF 边界 · 编辑后重新编码 · multipart/related CID 引用检查</p>
+      <p class="sub">RFC 2045/2046 · 嵌套 multipart · Content-Transfer-Encoding · quoted 参数 · CRLF 边界 · 定界符冲突修复 · 编辑后重新编码 · multipart/related CID 引用检查</p>
     </div>
   </div>
   <div class="topbar-actions">
@@ -84,8 +84,13 @@
         <input type="checkbox" id="includeHeaders" checked>
         编码时包含顶层头部（取消勾选则仅输出 multipart body）
       </label>
-      <button id="btnEncode" class="btn btn-primary" type="button">重新编码并下载</button>
+      <div class="encode-actions">
+        <button id="btnFixBoundaries" class="btn" type="button"
+                title="按实际回写字节自内向外检查每个 multipart：序言或子实体中若有会被误认作本层定界符的行首内容，为该层生成不冲突的新 boundary">修复定界符冲突</button>
+        <button id="btnEncode" class="btn btn-primary" type="button">重新编码并下载</button>
+      </div>
     </div>
+    <div id="fixResult" class="fix-result hidden"></div>
   </section>
 
   <section class="card hidden" id="cidCard">

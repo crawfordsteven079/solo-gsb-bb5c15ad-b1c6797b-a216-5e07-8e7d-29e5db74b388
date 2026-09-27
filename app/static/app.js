@@ -544,6 +544,7 @@ async function doParse() {
     $("#issuesCard").classList.remove("hidden");
     $("#treeCard").classList.remove("hidden");
     $("#outputCard").classList.add("hidden");
+    $("#fixResult").classList.add("hidden");
     renderIssues($("#issuesList"), data.issues);
     rerenderTree();
     loadAttachments({ resetSelection: true });
@@ -581,6 +582,52 @@ async function doEncode(andDownload = true) {
     alert("编码失败：" + e.message);
   } finally {
     $("#btnEncode").disabled = false;
+  }
+}
+
+// ------------------------------------------------------- boundary fix --
+
+// 修复定界符冲突：后端按实际回写字节自内向外检查每个 multipart，
+// 为冲突层生成新 boundary 并同步 Content-Type；成功后用修复树替换当前编辑树。
+async function doFixBoundaries() {
+  if (!tree) return;
+  reindexPaths(tree, "root");
+  const box = $("#fixResult");
+  $("#btnFixBoundaries").disabled = true;
+  try {
+    const data = await postJSON("/api/fix-boundaries", { tree });
+    box.classList.remove("hidden");
+    if (!data.ok) {
+      box.innerHTML =
+        `<div class="fix-line fix-error">⚠️ 无法安全修复，整棵树保持不变：` +
+        `${escapeHtml(data.error || "未知原因")}</div>`;
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+    if (!data.changed) {
+      box.innerHTML =
+        `<div class="fix-line fix-ok">✅ ${escapeHtml(data.message || "未发现定界符冲突，无需修复")}</div>`;
+      return;
+    }
+    // 修复值已同步到各节点 Content-Type；用修复后的树替换页面编辑树
+    tree = data.tree;
+    rerenderTree();
+    const items = (data.fixes || []).map((f) =>
+      `<li><code class="fix-path">${escapeHtml(f.path)}</code>` +
+      `<span class="fix-old" title="旧 boundary">${escapeHtml(f.oldBoundary || "（空）")}</span>` +
+      `<span class="fix-arrow">→</span>` +
+      `<span class="fix-new" title="新 boundary">${escapeHtml(f.newBoundary)}</span></li>`,
+    ).join("");
+    box.innerHTML =
+      `<div class="fix-line fix-ok">✅ 已修复 ${data.fixes.length} 层定界符冲突，` +
+      `新 boundary 已同步到节点 Content-Type 与编辑树；可继续「重新编码并下载」：</div>` +
+      `<ul class="fix-list">${items}</ul>`;
+  } catch (e) {
+    box.classList.remove("hidden");
+    box.innerHTML =
+      `<div class="fix-line fix-error">⚠️ 修复请求失败：${escapeHtml(e.message)}</div>`;
+  } finally {
+    $("#btnFixBoundaries").disabled = false;
   }
 }
 
@@ -1295,6 +1342,7 @@ function exportDiff() {
 function init() {
   $("#btnParse").addEventListener("click", doParse);
   $("#btnEncode").addEventListener("click", () => doEncode(true));
+  $("#btnFixBoundaries").addEventListener("click", doFixBoundaries);
   $("#btnDownload").addEventListener("click", downloadBlob);
   $("#btnCopy").addEventListener("click", copyOutput);
   $("#showOutput").addEventListener("change", (e) => {
